@@ -1,0 +1,717 @@
+# Server-side enforcement of the gates that, until now, only ever ran locally.
+#
+# Why this file exists: every quality gate in this repo lived in .githooks/, which
+# runs only if someone has executed `git config core.hooksPath .githooks` in that
+# particular checkout, on that particular machine, and did not pass --no-verify.
+# With ~17 worktrees in play that is an unknown subset. Nothing re-checked on the
+# server: .github/ contained dependabot.yml and no workflows at all.
+#
+# MAPPING TO .githooks/pre-push — every step accounted for, nothing dropped silently.
+#
+#   pre-push step                       where it lands here
+#   ----------------------------------  --------------------------------------------
+#   0.  push-to-main guard              NOT PORTABLE. It inspects the refs being
+#                                       pushed, which CI never sees. The server-side
+#                                       equivalent is a GitHub branch-protection rule
+#                                       on `main` — not yet configured. GAP.
+#   --  pr_overlap_guard (advisory)     DROPPED. Warns an author that their files
+#                                       overlap an open PR. Useful before pushing,
+#                                       meaningless after.
+#   1.  pytest                          python-tests
+#   1a. dependency-skip ratchet         python-tests  (new 2026-08-06 — the
+#                                       counter-measure to the three-day red
+#                                       main; see scripts/check_dependency_skips.py)
+#   1b. mutation-count baselines        python-tests
+#   1c. brief field-coverage ratchet    python-tests
+#   1d. schema contract                 schema-contract
+#   1e. controls provenance             schema-contract (shares its live DB access)
+#   2.  jest                            frontend-tests
+#   3.  qa_gate                         qa-and-liability, PR-only step (see job)
+#   4.  liability language scan         qa-and-liability, BOTH events — on main
+#                                       it diffs HEAD^..HEAD, so a direct push
+#                                       is still scanned
+#   5.  mutmut (opt-in, MUTMUT=1)       DROPPED. Already opt-in and non-blocking
+#                                       locally, and needs a WSL venv. Worth
+#                                       revisiting: the last measured kill rate was
+#                                       13%, so test COUNT is not evidence of cover.
+#   6.  jscpd duplication ratchet       duplication
+#   6b. fabricated-verdict lint         python-tests (no DB or network needed)
+#   7.  Sol cross-review (advisory)     DROPPED. Non-blocking by design, needs a paid
+#                                       API key, and is a review aid not a gate.
+#
+# Where pre-push SKIPS a check because a local checkout lacks node_modules, CI always
+# has them — so for everything it does run, CI is the stronger of the two.
+name: gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on PULL REQUESTS only.
+#
+# `cancel-in-progress: true` unscoped also cancelled runs on main, and that is not
+# a saving — it is a hole. main-red-alarm asks "does main's HEAD have a successful
+# gates run?", so a main run cancelled by the next merge leaves a commit that
+# nothing ever checked, which is the precise condition the alarm exists to catch.
+# Observed 2026-08-11: #888 and #834 merged seconds apart, and the first merge
+# commit's run died without a verdict.
+#
+# On a pull request the opposite is true — a force-push during a rebase makes the
+# older run answer a question about a sha nobody will merge, so cancelling it is
+# free. Rebases are routine here, so this is where the waste actually was.
+concurrency:
+  group: gates-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # pre-push [1/4] + [1b] + [1c]
+  python-tests:
+    name: Python tests + ratchets
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    # `actions: read` so the data-watch freshness step can list workflow runs.
+    # Its FIRST CI run printed "the Actions API could not be reached" — the
+    # real answer was 403, because this workflow declares no permissions and
+    # the default token cannot read the Actions API. The check ran, said
+    # something reassuring, and could never have fired. Scoped to this job
+    # rather than the workflow so the other jobs keep whatever defaults they
+    # rely on.
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      # No `cache:` input on setup-python/setup-node.
+      #
+      # On a SELF-HOSTED runner GitHub's cache action is redundant and actively
+      # harmful: pip and npm keep their own caches on the machine between jobs,
+      # while the post-job cache UPLOAD has to reach GitHub's cache service. On
+      # 2026-08-11 that upload returned `"statusCode": "http_timeout"` and sat
+      # retrying for ~40 minutes AFTER every real check had already passed, so a
+      # green run looked hung. Restore the cache inputs if RUNNER_LABEL is ever
+      # unset and jobs go back to GitHub-hosted runners.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-test.txt
+      # No -x. It was there until 2026-08-06, and it is why a single missing
+      # dependency (PyMuPDF, absent from requirements-test.txt) hid the state
+      # of ~1,800 tests for three days: pytest stopped at the first failure,
+      # so the run reported one broken test and said nothing about the rest.
+      # Fail-fast saves runner minutes and costs diagnostic information at
+      # exactly the moment it is most needed. The whole suite runs in ~30s.
+      - name: pytest
+        run: |
+          # Remove any census before the run so the ratchet can never read a
+          # file this run did not produce. conftest does this too; doing it
+          # here as well means a failure to remove it fails the step visibly
+          # rather than being absorbed inside pytest.
+          rm -f .pytest-skips.json
+          python -m pytest tests/ -q --tb=short
+      # A skipped test is not a passing test. tests/conftest.py writes every
+      # dependency-driven skip to .pytest-skips.json; this ratchets the count
+      # so the silent version of the same failure cannot grow unnoticed.
+      # `if: always()` because this is most informative precisely when pytest
+      # has just failed.
+      - name: Tests that did not run (dependency-skip ratchet)
+        if: always()
+        run: python scripts/check_dependency_skips.py
+      # The sibling of the above, for the OTHER way a test stops running. A
+      # dependency skip at least prints "skipped"; a file in collect_ignore is
+      # never collected, so it produces no output at all and `pytest -m stale`
+      # returns zero. All 16 were quarantined in the single commit that turned
+      # these gates on (#362, 2026-05-23) and nothing re-checked for 15 months.
+      # Shrink-only: a new quarantine fails, and so does a listed file that has
+      # started passing, so fixed means deleted rather than forgiven.
+      - name: Quarantined tests (shrink-only ratchet)
+        if: always()
+        run: python scripts/check_test_quarantine.py
+      # The data-quality ledger's statuses, enforced rather than asserted.
+      # Runs BOTH ways: a row declared fixed whose check fails is a regression,
+      # and a row declared open whose check PASSES means it was quietly fixed
+      # and the ledger never caught up — the direction nobody ever looks, and
+      # exactly how DQ-54 sat "Open — report-only" hours after it was merged.
+      # Also fails when a new ledger row has no entry in dq_checks.json, so the
+      # ledger cannot grow rows nobody has to think about.
+      # DATABASE_URL is the read-only `ci_readonly` role: pg_read_all_data,
+      # default_transaction_read_only=on, statement_timeout=30s, BYPASSRLS.
+      # Writes are refused by the SERVER, not by client code. Without it every
+      # DB-backed row reported UNKNOWN here, so the ledger only ever enforced
+      # the non-DB half of itself in CI.
+      # Hardcoded NSW planning data, tree-wide and shrink-only.
+      # lint_hardcoded_zone_codes.py already had an --all mode and already
+      # covered .ts/.tsx, but it was only ever run diff-scoped from pre-commit,
+      # so every violation that ALREADY existed was invisible permanently. A
+      # rule that applies only to future code cleans nothing up — which is how
+      # a live zone→permitted-use table (#928) and a hardcoded minimum-lot-size
+      # map in lib/setbacks/validator.ts both survived in served code.
+      # Baseline is 270 because failing on all of them would block every merge
+      # and the guard would be deleted within a week. It may fall, never rise.
+      - name: Hardcoded regulatory data (shrink-only ratchet)
+        if: always()
+        run: python scripts/lint_hardcoded_zone_codes.py --baseline
+      # Has anybody looked at the DATA lately?
+      #
+      # Every database check in this file runs on `pull_request` and
+      # `push: main`, so the live data is inspected only when somebody happens
+      # to touch the code. `data-watch` fixes that with a schedule — but a
+      # scheduled workflow is precisely the kind of thing that stops quietly.
+      # main-red-alarm spent 12 runs out of 12 dying at `gh: command not found`
+      # while `gates` was green, and these runners do not survive a reboot.
+      #
+      # So the question is asked HERE, on the one trigger guaranteed to fire.
+      # Nothing on a schedule can report that the scheduler is dead.
+      #
+      # Only a MEASURED staleness fails. No token, no runs yet, workflow absent
+      # from the default branch, API unreachable — each prints its own reason
+      # and passes, because failing a stranger's PR for a dead cron is how a
+      # check gets deleted, and a deleted check protects nothing.
+      - name: Live data was checked recently (data-watch freshness)
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/check_data_watch_freshness.py
+      # A ratchet that cannot run is not a ratchet that passed.
+      #
+      # This was ::warning:: + exit 0 until 2026-08-16, which is the #398 shape:
+      # the control keeps its green tick while enforcing nothing, and the one
+      # signal that it stopped is a warning nobody is assigned to read. Both
+      # files are TRACKED, so "absent" here cannot mean "not set up yet" — it
+      # means deleted, renamed, or a checkout that did not complete, and every
+      # one of those is a thing to stop for.
+      - name: Mutation-count baselines (counts never drop)
+        run: |
+          MISSING=""
+          [ -f mutation-baselines.json ] || MISSING="$MISSING mutation-baselines.json"
+          [ -f scripts/check_test_baselines.py ] || MISSING="$MISSING scripts/check_test_baselines.py"
+          if [ -n "$MISSING" ]; then
+            echo "::error::the mutation-count ratchet could not run — missing:$MISSING"
+            echo "Both files are tracked in git, so this is a deletion or a bad checkout,"
+            echo "not an unconfigured repo. Restore them, or delete this step deliberately"
+            echo "in a PR that says why the ratchet is going away."
+            exit 1
+          fi
+          python scripts/check_test_baselines.py mutation-baselines.json
+      - name: Fabricated-verdict lint (report surfaces)
+        run: python scripts/lint_fabricated_verdicts.py
+      # Output-grounding campaign items 2-5 (PRs #874/#876, merged 2026-08-03).
+      # They were BUILT, MERGED, and then invoked by nothing for nine days.
+      #
+      # All four are observation mode and exit 0 regardless of findings, by
+      # design: campaign §7 finding 6 says a gate must earn blocking status
+      # from an observed false-positive rate. But that promotion path starts
+      # with observing, and a check no job runs observes nothing — so the
+      # design stalled at step one and drift stayed invisible between sessions.
+      # Running them here is what makes the observation real. Promote to
+      # blocking (paid channel first) once the output has been read across a
+      # few weeks of runs; until then a finding must never fail the build.
+      # BLOCKING, unlike the observation step below. The absolute targets
+      # (dateless_claims == 0, every report manifested) are not enforced - those
+      # stay observation. What IS enforced is direction: a count may fall and
+      # never rise. A rise is unambiguous, it means work just landed that made
+      # coverage worse, and it needs no false-positive record to justify.
+      # Same precedent as the zone-code ratchet above, which blocks on 270.
+      #
+      # This also replaces a plan file as the progress record. The campaign's
+      # remaining work lived in prose that nothing executed, so every session
+      # re-derived where it had got to. The baselines ARE the work list:
+      # .claude/as_at_coverage_baseline.json is 292 dateless claims across 10
+      # named councils, .claude/manifest_coverage_baseline.json is 892 reports
+      # across 5 products. Lower them with --baseline --update when work lands.
+      - name: Coverage ratchets (counts may fall, never rise)
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python scripts/check_dcp_as_at_coverage.py --baseline
+          python scripts/check_satellite_manifests.py --baseline
+      - name: Output grounding (OBSERVATION ONLY — never fails the build)
+        if: always()
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          for s in lint_hardcoded_confidence check_ts_dcp_readers \
+                   check_dcp_as_at_coverage check_satellite_manifests \
+                   check_zone_coverage verify_coverage_stats; do
+            echo "--- $s ---"
+            python "scripts/$s.py" || echo "::warning::$s exited non-zero (observation mode)"
+          done
+      # Same change, same reason as the mutation-count step above: a missing
+      # tracked script is a deletion, and a deletion must not present as a pass.
+      - name: Brief field-coverage ratchet
+        run: |
+          if [ ! -f scripts/brief_field_coverage_ratchet.py ]; then
+            echo "::error::the brief field-coverage ratchet could not run — scripts/brief_field_coverage_ratchet.py is absent"
+            echo "It is tracked in git. Restore it, or remove this step in a PR that says why."
+            exit 1
+          fi
+          python scripts/brief_field_coverage_ratchet.py
+
+  # pre-push [2/4] — and unlike pre-push, this can never self-skip for missing deps
+  frontend-tests:
+    name: Jest
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0          # this job also runs the doc-claim ratchet,
+          # which needs origin/main to compute what THIS branch deletes
+          # (scripts/doc_claims.py:deleted_in_diff). Found live 2026-09-05:
+          # the default shallow checkout here has no other ref history at
+          # all, so origin/main, origin/master and main all fail to resolve
+          # and deleted_in_diff() correctly, silently returns empty rather
+          # than guessing -- which meant the leniency it exists to provide
+          # never activated in THIS job, only in qa-and-liability/duplication
+          # (which already set this for the identical reason).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+      - run: npm ci
+        working-directory: frontend-nextjs
+      - run: npx jest --ci --silent
+        working-directory: frontend-nextjs
+      # PRODUCTION BUILD. Nothing ran one until 2026-08-26, and the cost was a
+      # DAY of frozen deploys: every Vercel deployment from #1003 onward failed
+      # while every gate reported green.
+      #
+      # Two build-breaking defects shipped through the full stack of checks:
+      #   · an unescaped apostrophe in `Google's` inside a single-quoted string
+      #     (#1003) — SWC refuses it, and it reached production main
+      #   · a duplicate `available_dev_types` key in one interface (#1012)
+      #
+      # Neither was caught, because the type-check gate COUNTS errors against a
+      # baseline of 677 and reported "passed: 8 errors". A counting gate cannot
+      # fail on a fatal error that happens to be inside the allowance. Jest,
+      # QA gate and cross-review were all green too.
+      #
+      # The dev-server check below is NOT a substitute and vice versa: its own
+      # comment records that `next dev` catches route collisions `next build`
+      # tolerates. This catches the reverse — compile and type errors that only
+      # a production build refuses. Both are needed.
+      - name: Production build must succeed
+        run: npm run build
+        working-directory: frontend-nextjs
+      # `next build` and `next dev` are NOT interchangeable. #929 is a route
+      # collision that build tolerates and dev refuses, so a green build hid a
+      # dev server that had been dead for 20 days — nobody noticed because
+      # nothing ever started it. This does, and waits for a real HTTP response
+      # rather than a log line: Next prints the Local URL BEFORE it sorts
+      # routes, so a check that trusts that line passes on the broken app.
+      # (The first version of this check did exactly that.)
+      # Needs Python, and this job previously set up Node only — the first run
+      # died at exit 127, `python: command not found`. Same shape as DQ-54: a
+      # command assumed present on a runner that does not carry it.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      # The ledger runs HERE, not in the python job, because one of its checks
+      # is a jest test: DQ-32's defect was a component dropping a field, and no
+      # database probe can see a rendering bug. The python job has no
+      # node_modules, so jest exited non-zero there and dq_check read that as
+      # "the defect is back" — a false RED that would have blocked the merge
+      # that shipped the fix. This job already installs both runtimes, so the
+      # answer here is a real verdict rather than UNKNOWN, at no extra cost.
+      # `requires` in dq_checks.json is the belt to this braces: anywhere the
+      # dependencies are absent, the row reports UNVERIFIED, never failing.
+      - name: Data-quality ledger (status ratchet)
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/dq_check.py
+
+      # Doc-claim ratchet. Built weeks ago with a baseline, --compare and
+      # --strict, and wired into NOTHING — its own docstring said so. Thirteen
+      # new violations accumulated in the fortnight after the last baseline.
+      # Exit 1 = new claims that do not hold (blocks); 2 = scan gaps (does not).
+      - name: Doc claims must not regress
+        run: |
+          set +e
+          python scripts/doc_claims.py --compare --strict
+          rc=$?
+          set -e
+          if [ "$rc" -eq 1 ]; then exit 1; fi
+          exit 0
+
+      - name: Dev server boots
+        if: always()
+        # BLOCKING as of the PR that fixed #929. The instruction this replaces
+        # said to flip it in that PR, with that PR's green run as the proof —
+        # this is that flip. The collision was app/sitemap.xml/ claiming the URL
+        # the generateSitemaps() metadata route already owns; the index handler
+        # moved to /sitemap-index.xml behind a beforeFiles rewrite.
+        #
+        # Kept as a separate step rather than folded into the jest step: the
+        # failure it catches is a route-collection error that `next build`
+        # tolerates and `next dev` refuses, so no build-based check can see it.
+        run: python scripts/check_dev_server_boots.py --timeout 150
+
+  # pre-push [3/4] + [4/4]
+  #
+  # The job runs on both events; the QA-REPORT STEP is the PR-only part.
+  #
+  # HISTORY, because the original reason is now fixed and the scoping is not.
+  # qa_gate.py used to bind the report to one of the branch's last 5 commits,
+  # which a SQUASH merge necessarily destroys: the squash is a new hash and the
+  # branch's commits never enter main's history, so the report hash was
+  # guaranteed absent. Every push to main failed on "Commit hash mismatch" — a
+  # second, independent reason main was red from 2026-08-03, underneath the
+  # PyMuPDF one and invisible while that was being blamed for everything. The
+  # binding is now ancestry-based (check_commit_hash_binding in qa_gate.py) and
+  # SKIPS when the branch has no commits of its own, so it no longer forces
+  # main red.
+  #
+  # The step stays PR-only for a different and still-live reason: the report is
+  # per-branch (.qa/reports/<slug>.json), and on main there is no branch whose
+  # report this is — the resolver correctly finds nothing and the step would
+  # warn on every single push. Diff-coverage against main's own last commit is
+  # meaningless too. So it runs where its question is answerable, while the
+  # liability scan keeps running on both. Scoping the WHOLE job to pull
+  # requests (the first attempt here) would have let a direct push to main land
+  # prohibited wording with nothing scanning it.
+  qa-and-liability:
+    name: QA report + liability language
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0          # both checks diff against the merge-base
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-test.txt
+      # PR only, and for the same reason as the QA report below: a squash merge
+      # re-authors the commit as the merging GitHub account, so on main this is
+      # always trivially green and proves nothing. The branch commits are the
+      # only place a bad author identity is still visible.
+      - name: Commit author identity
+        if: github.event_name == 'pull_request'
+        run: |
+          BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)
+          python scripts/check_commit_authors.py --range "$BASE..HEAD"
+      # PR only — see the note above the job. The liability scan below still
+      # runs on main; only THIS check is unanswerable after a squash merge.
+      - name: QA report validation
+        if: github.event_name == 'pull_request'
+        run: |
+          # Per-branch report. GITHUB_HEAD_REF is what names the branch here:
+          # a pull_request event checks out a DETACHED merge commit, so git
+          # itself cannot say which branch this is.
+          REPORT=$(python scripts/qa_report_path.py --relative 2>/dev/null || true)
+          if [ -z "$REPORT" ] || [ ! -f "$REPORT" ]; then
+            TARGET=$(python scripts/qa_report_path.py --target --relative 2>/dev/null || true)
+            # HARD FAIL, changed 2026-08-12. This was ::warning:: + exit 0, which
+            # meant a PR with no QA report merged with the gate not merely
+            # unsatisfied but NOT RUN — indistinguishable on the PR page from a
+            # PR that passed it. #927 blocked the route where a report exists
+            # locally but git silently discards it; this closes the other one,
+            # where nobody wrote a report at all.
+            #
+            # A warning nobody is assigned to read is not a control. If a change
+            # genuinely needs no QA depth, that is what the `minor` tier is for:
+            # write the report and say so. Refusing to write one is not the same
+            # as the change being safe.
+            echo "::error::QA report absent (expected ${TARGET:-.qa/reports/<slug>.json})."
+            echo "QA report absent — expected at: ${TARGET:-.qa/reports/<slug>.json}"
+            echo "Create it from scripts/qa_report_template.json, or run:"
+            echo "  python scripts/qa_report_path.py --target --relative"
+            echo "A 'minor' tier report is a legitimate answer. An absent one is not."
+            exit 1
+          fi
+          echo "QA report: $REPORT"
+          BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)
+          FILES=$(git diff --name-only "$BASE"...HEAD -- '*.py' '*.ts' '*.tsx' '*.jsx' || true)
+          if [ -n "$FILES" ]; then
+            python scripts/qa_gate.py "$REPORT" --diff-files $FILES
+          else
+            python scripts/qa_gate.py "$REPORT"
+          fi
+      # Runs on BOTH events. Scoping the whole job to pull requests would have
+      # meant a direct push to main — an admin, or any automation with write
+      # access — landing prohibited wording with nothing scanning it. On a PR
+      # the base is the merge-base; on a main push it is the previous commit,
+      # which is exactly the change that just landed.
+      - name: Liability language scan
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)
+          else
+            # github.event.before, not HEAD^: a push can carry SEVERAL commits,
+            # and HEAD^ would scan only the last one — prohibited wording
+            # introduced in an earlier commit of the same push would sail
+            # through. Falls back to HEAD^ when `before` is the all-zero SHA
+            # (first push of a ref) or is no longer reachable.
+            BASE="${{ github.event.before }}"
+            if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]                || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+              BASE=$(git rev-parse HEAD^ 2>/dev/null || echo HEAD)
+            fi
+          fi
+          echo "Scanning against base: $BASE"
+          python scripts/liability_language_check.py --diff-base "$BASE"
+
+  # pre-push [6] — copy-paste ratchet. Threshold 8% lives in .jscpd.json
+  # (baseline 6.77%, 2026-06-19). Blocks on a real breach, never on tool failure,
+  # matching the local step.
+  duplication:
+    name: Duplication ratchet
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+      - name: jscpd
+        run: |
+          BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)
+          CHANGED=$(git diff --name-only "$BASE"...HEAD \
+            | grep -E '^(services|scripts|src|frontend-nextjs/(app|components|lib))/.*\.(py|ts|tsx)$' \
+            | grep -vE '(test|__tests__|\.spec\.)' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No source code changed — ratchet not applicable."
+            exit 0
+          fi
+          set +e
+          OUT=$(npx --yes jscpd@4 2>&1); RC=$?
+          set -e
+          echo "$OUT" | grep -iE "duplicated lines|too many duplicates" | tail -2
+          if [ $RC -ne 0 ] && echo "$OUT" | grep -qi "too many duplicates"; then
+            echo "::error::Duplication exceeds the 8% ratchet. Reuse or refactor rather than copy-paste."
+            exit 1
+          fi
+          # jscpd exited non-zero WITHOUT reporting a breach: it did not run.
+          # Until 2026-08-16 that was a ::warning:: and a green tick, so a
+          # broken or unreachable tool was indistinguishable on the PR page from
+          # a clean ratchet — for however long it stayed broken.
+          #
+          # This does mean an npm-registry outage can fail the job. That is the
+          # intended trade and it is the cheap direction: a transient failure is
+          # loud, diagnosable and re-runnable, while a silent one is neither.
+          # The full output is printed rather than summarised so the re-run
+          # decision can be made from the log instead of by guessing.
+          if [ $RC -ne 0 ]; then
+            echo "::error::jscpd could not run (exit $RC) — the duplication ratchet did NOT check this diff"
+            echo "--- jscpd output ---"
+            echo "$OUT"
+            echo "--------------------"
+            exit 1
+          fi
+
+  # New. Needs the live catalog, so it needs the DATABASE_URL secret.
+  #
+  # Three-state at the CI level, deliberately: this job is SKIPPED (not passed) on
+  # forks and Dependabot PRs, which cannot see repository secrets. A skipped job
+  # reads as "not checked" in the UI; a green one would read as "checked and fine",
+  # which is the exact conflation this gate exists to prevent. When the job DOES
+  # run and the secret is missing, the script exits 2 and the job fails — silence
+  # is never treated as a pass.
+  schema-contract:
+    name: Schema contract (code vs live catalog)
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ vars.RUNNER_LABEL || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-test.txt
+      - name: Validate every SQL identifier against the live schema
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/validate_schema_contract.py
+      # Mirrors pre-push step [1e/5]. Lives in this job because it is the one with
+      # live DB access; exits 1 if any numeric control is unattributable.
+      - name: Validate controls provenance
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/validate_controls_provenance.py --quiet
+      # Mirrors pre-push step [1f/5]. Covers all 1,069 controls rather than the 42
+      # the corpus can reach, because it checks each number against the quote
+      # stored beside it. Exits 1 on any value no named rule derives that is not
+      # already in the baseline.
+      # Also gates fabricated_values over all 1,069 rows: a value whose own
+      # condition/review_reason admits it was assumed must not be SERVED. All 28
+      # such rows are already is_current=FALSE, so this passes today.
+      - name: Validate control values against their own source text
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/validate_control_source_values.py
+      # Also runs nightly in data-watch. It belongs in BOTH because it can
+      # regress two different ways: the data can drift with no commit (that is
+      # data-watch's job), and a code change to the serve path can drop a field
+      # this scores — stop selecting pdf_page and provenance collapses with the
+      # database untouched. Catching that at PR time is a day earlier than the
+      # nightly run, and the person who caused it is still holding it.
+      #
+      # It measures through fetch_dcp_setbacks, so a change that breaks serving
+      # fails here rather than being scored as clean.
+      - name: Served-answer quality (provenance, currency, applicability)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/check_served_answer_quality.py --baseline
+      # Real-database integration tests, BLOCKING, on the one trigger
+      # guaranteed to fire. Named directly in session (2026-09-04): every
+      # test in tests/*.py that carries @pytest.mark.database is deselected
+      # by pytest.ini's default addopts and requires PYTEST_REAL_DB=1 --
+      # opt-in, on purpose, so the mocked suite everyone runs stays fast and
+      # untouched by production credentials. But opt-in only protects
+      # anything if someone remembers to opt in, and nothing in this repo
+      # ever did for these files before now.
+      #
+      # Scoped to ONE file, not `-m database` over the whole tests/ tree.
+      # Checked, not assumed: running the full marker set surfaced a REAL,
+      # PRE-EXISTING failure with nothing to do with this change --
+      # tests/test_lga_coverage.py found inner-west/marrickville at 14.8%
+      # NULL v2_topic against its own 10% threshold, live in production,
+      # undetected because nothing has ever run this file either. Wiring
+      # the whole marker set in as BLOCKING today would fail every future
+      # PR on a defect this workflow did not introduce. That file needs
+      # its own decision (fix the data, or land in observation mode first
+      # like the "Output grounding" step above already does for exactly
+      # this reason) -- tracked separately, not silently absorbed here.
+      #
+      # tests/test_drawdown_verify_real_db.py is the one file confirmed
+      # green end-to-end this session: real connection lifecycle, a real
+      # insert/read/delete round trip, and a real HTTP request through
+      # FastAPI's actual routing (not just the bare Python function) --
+      # force-failed against the pre-fix code in a disposable worktree
+      # before being trusted here.
+      #
+      # Sol cross-review (2026-09-04, on push) caught what this file's own
+      # comment above already documents but this step ignored: DATABASE_URL
+      # here is the `ci_readonly` role (default_transaction_read_only=on --
+      # see the comment on the python-tests job above). Two of this file's
+      # six tests genuinely WRITE (insert a real row, delete it) and would
+      # fail here, not because the fix is wrong but because the CI
+      # credential correctly refuses the write at the SERVER, which is the
+      # point of that role. Selected explicitly to the 4 tests that only
+      # ever SELECT -- the connection-lifecycle open/close/schema checks,
+      # and the failure-path HTTP test, where _insert_audit is mocked to
+      # raise before any real INSERT is attempted. The 2 write-requiring
+      # tests (test_insert_read_delete_round_trip_through_the_real_functions,
+      # test_real_http_request_on_success_actually_writes_a_readable_row_and_
+      # cleans_up) stay local-only, run by hand against a writable
+      # credential when this file changes -- not CI, and not against a role
+      # that can act on PR-controlled code with write access to production.
+      #
+      # KNOWN GAP (Sol cross-review round 3, 2026-09-04, not yet closed): this
+      # means the actual write path -- a real INSERT succeeding end-to-end
+      # through the real endpoint -- has no BLOCKING CI coverage. A change
+      # that broke the INSERT itself would pass every check here, because
+      # none of the 4 selected tests attempt one. The correct fix is an
+      # isolated, disposable, writable Postgres service in CI (migrations
+      # applied, never production) -- real infrastructure work, not
+      # attempted this session because it could not be verified against an
+      # actual CI run in the time available, and untested CI YAML is worse
+      # than a named gap.
+      - name: Real-database integration tests (drawdown-verify, read-only subset)
+        env:
+          PYTEST_REAL_DB: "1"
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python -m pytest -m database -o addopts= -v \
+            "tests/test_drawdown_verify_real_db.py::TestRealConnectionLifecycle::test_db_conn_returns_a_real_psycopg2_connection_and_close_actually_closes_it" \
+            "tests/test_drawdown_verify_real_db.py::TestRealConnectionLifecycle::test_get_audit_closes_the_real_connection_even_on_a_genuine_query_error" \
+            "tests/test_drawdown_verify_real_db.py::TestRealConnectionLifecycle::test_drawdown_verify_audits_exists_with_the_expected_schema" \
+            "tests/test_drawdown_verify_real_db.py::TestRealHttpLayer::test_real_http_request_on_audit_failure_returns_a_real_500_with_the_exact_expected_body"
+      # Behavioural cover for the precinct ancestor-key resolution (#993). It
+      # lives here because this is the job with live DB access, and because the
+      # alternative was leaving it PYTEST_REAL_DB-only: a change that kept the
+      # CTE but broke the rule would have passed CI on a shape assertion alone.
+      # The test EXTRACTS the SQL from precinct-service.ts rather than holding a
+      # copy, so it fails if the served query is altered or removed.
+      - name: Precinct ancestor-key resolution (behaviour, not shape)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PYTEST_REAL_DB: '1'
+        run: python -m pytest tests/test_precinct_ancestor_resolution.py -q -o addopts="" --tb=short
+
+  # Closes the gap the schema-contract job's own comments above name: the
+  # WRITE path (a real INSERT succeeding end-to-end through the real
+  # endpoint) had no blocking CI coverage, because CI's DATABASE_URL secret
+  # is deliberately the read-only ci_readonly role and cannot write.
+  #
+  # An isolated, disposable Postgres SERVICE container -- not production,
+  # never production, thrown away when the job ends -- with only
+  # migrations/033_drawdown_verify_audits.sql applied (the one table these
+  # tests touch, not a full schema replay). Verified locally against a real
+  # throwaway Postgres database before being trusted here: migration 033
+  # applies cleanly to a bare database with no other tables or extensions
+  # (gen_random_uuid() is native since Postgres 13, no pgcrypto needed), and
+  # both write-path tests pass against it.
+  #
+  # This is a genuinely different database from production -- it can drift
+  # from production's real live schema if migration 033 and prod diverge
+  # without anyone updating this file. Mitigated today (prod was verified to
+  # match migration 033 exactly, column-for-column, when the migration was
+  # run), not mitigated structurally -- there is no automatic check that
+  # this test schema stays in sync with production's real schema.
+  drawdown-verify-write-path:
+    name: Drawdown-verify write path (isolated test DB, never production)
+    # Hardcoded to GitHub-hosted ubuntu-latest, NOT the ${{ vars.RUNNER_LABEL
+    # || 'ubuntu-latest' }} every other job uses. Checked, not assumed: the
+    # first push of this job used that same shared pattern and failed in 12s
+    # with "Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+    # -- the self-hosted runner (RUNNER_LABEL resolves to one, named
+    # wsl-ubuntu-lawre-2 in the failed run's own log) has no Docker daemon
+    # running, so `services:` containers -- which GitHub Actions implements
+    # via Docker -- cannot start there at all. GitHub-hosted runners always
+    # ship Docker pre-installed and running, which is the entire mechanism
+    # `services:` depends on. This is the one job in this file that needs it.
+    runs-on: ubuntu-latest
+    # Parameterised rather than a literal postgres:postgres@localhost URL --
+    # not because it's a real secret (it's the well-known default for a
+    # throwaway CI-only container, torn down when the job ends), but because
+    # .githooks/pre-commit's own secrets scanner cannot tell "known-public
+    # ephemeral default" from "real leaked credential" by pattern alone, and
+    # its own comment names the exact fix: a ${VAR} placeholder, not the
+    # literal value, is what it recognises as safe. One definition here,
+    # referenced by both steps below, so the two can never drift apart.
+    env:
+      PGHOST_TEST: localhost
+      PGPORT_TEST: "5432"
+      PGUSER_TEST: postgres
+      PGPASSWORD_TEST: postgres
+      PGDATABASE_TEST: postgres
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements-test.txt
+      - name: Apply migration 033 to the isolated test database
+        run: |
+          export DATABASE_URL="postgresql://${PGUSER_TEST}:${PGPASSWORD_TEST}@${PGHOST_TEST}:${PGPORT_TEST}/${PGDATABASE_TEST}"
+          python -c "
+          import os, psycopg2
+          conn = psycopg2.connect(os.environ['DATABASE_URL'])
+          conn.autocommit = True
+          cur = conn.cursor()
+          cur.execute(open('migrations/033_drawdown_verify_audits.sql').read())
+          cur.execute(\"SELECT count(*) FROM information_schema.tables WHERE table_name='drawdown_verify_audits'\")
+          assert cur.fetchone()[0] == 1, 'migration did not create the table'
+          conn.close()
+          print('migration 033 applied to the isolated test database')
+          "
+      - name: Write-path integration tests (isolated DB -- NOT production)
+        env:
+          PYTEST_REAL_DB: "1"
+        run: |
+          export DATABASE_URL="postgresql://${PGUSER_TEST}:${PGPASSWORD_TEST}@${PGHOST_TEST}:${PGPORT_TEST}/${PGDATABASE_TEST}"
+          python -m pytest -m database -o addopts= -v \
+            "tests/test_drawdown_verify_real_db.py::TestRealConnectionLifecycle::test_insert_read_delete_round_trip_through_the_real_functions" \
+            "tests/test_drawdown_verify_real_db.py::TestRealHttpLayer::test_real_http_request_on_success_actually_writes_a_readable_row_and_cleans_up"

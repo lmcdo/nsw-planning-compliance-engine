@@ -1,0 +1,36 @@
+{
+  "id": "woollahra",
+  "name": "Woollahra",
+  "type": "single",
+  "basix": {
+    "area_code": "Area 5",
+    "area_name": "Eastern Suburbs",
+    "climate_zone": "56",
+    "water_target_percent": 40
+  },
+  "planning": {
+    "residential_zones": ["R2", "R3"],
+    "industrial_zones": ["IN1"],
+    "apartment_permitting_zones": ["R3", "B1", "B2", "B4"]
+  },
+  "sepp": {
+    "applicable_sepps": [
+      "SEPP_HOUSING_2021",
+      "SEPP_SUSTAINABLE_BUILDINGS_2022",
+      "SEPP_RESILIENCE_HAZARDS_2021",
+      "SEPP_TRANSPORT_INFRASTRUCTURE_2021"
+    ]
+  },
+  "transport": {
+    "has_tod_precincts": false
+  },
+  "former_council_detection": {
+    "requires_detection": false
+  },
+  "metadata": {
+    "population": 58000,
+    "area_km2": 18.5,
+    "website_url": "https://www.woollahra.nsw.gov.au",
+    "notes": "Single council — not amalgamated. Woollahra DCP 2015 (per-chapter PDFs, chapters A1/A3, B1–B4, C1–C3, D4, E1–E3/E5–E6). Heritage: B2 (Neighbourhood HCAs), C1 (Paddington HCA), C2 (Woollahra HCA), C3 (Watsons Bay HCA). Business centres: D4 (Edgecliff). Suburbs: Woollahra, Paddington, Double Bay, Watsons Bay, Rose Bay, Bellevue Hill, Point Piper, Edgecliff."
+  }
+}

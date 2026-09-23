@@ -1,0 +1,173 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* NSW Planning Compliance - Teal/Slate Professional Palette */
+  --background: 210 20% 98%;
+  --foreground: 220 20% 10%;
+  --card: 0 0% 100%;
+  --card-foreground: 220 20% 10%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 220 20% 10%;
+  /* Primary: Teal-600 */
+  --primary: 175 84% 32%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 210 20% 96%;
+  --secondary-foreground: 220 20% 10%;
+  --muted: 210 20% 96%;
+  --muted-foreground: 220 10% 46%;
+  /* Accent: Light teal */
+  --accent: 175 50% 95%;
+  --accent-foreground: 175 84% 25%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 220 13% 91%;
+  --input: 220 13% 91%;
+  --ring: 175 84% 32%;
+  --radius: 0.625rem;
+}
+
+.dark {
+  --background: 222.2 84% 4.9%;
+  --foreground: 210 40% 98%;
+  --card: 222.2 84% 4.9%;
+  --card-foreground: 210 40% 98%;
+  --popover: 222.2 84% 4.9%;
+  --popover-foreground: 210 40% 98%;
+  --primary: 210 40% 98%;
+  --primary-foreground: 222.2 47.4% 11.2%;
+  --secondary: 217.2 32.6% 17.5%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 217.2 32.6% 17.5%;
+  --muted-foreground: 215 20.2% 65.1%;
+  --accent: 217.2 32.6% 17.5%;
+  --accent-foreground: 210 40% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 210 40% 98%;
+  --border: 217.2 32.6% 17.5%;
+  --input: 217.2 32.6% 17.5%;
+  --ring: 212.7 26.8% 83.9%;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  /* Optimize font rendering for better performance */
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Hero dot pattern texture */
+.dot-pattern {
+  background-image: radial-gradient(circle, rgba(148, 163, 184, 0.07) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Reduce paint and layout thrashing */
+.setback-card, .property-panel, .analysis-tabs {
+  contain: layout style paint;
+}
+
+/* Optimize animations */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Google Maps autocomplete styling */
+.pac-container,
+div.pac-container {
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border: 1px solid #e2e8f0;
+  background: white;
+  margin-top: 2px;
+  min-width: 600px;
+  max-width: 800px;
+  width: 100%;
+  z-index: 9999;
+}
+
+.pac-item,
+div.pac-container .pac-item {
+  padding: 6px 12px;
+  border: none;
+  border-bottom: none;
+  border-top: none;
+  cursor: pointer;
+  line-height: 1.3;
+  font-size: 15px;
+  margin: 0;
+  box-shadow: none;
+}
+
+.pac-item:hover,
+div.pac-container .pac-item:hover {
+  background-color: #f1f5f9;
+  border: none;
+  border-bottom: none;
+}
+
+.pac-item:first-child,
+div.pac-container .pac-item:first-child {
+  border-top: none;
+}
+
+.pac-item:last-child,
+div.pac-container .pac-item:last-child {
+  border-bottom: none;
+}
+
+.pac-item-query,
+div.pac-container .pac-item-query {
+  color: #1f2937;
+  font-weight: 500;
+  padding: 0;
+  margin: 0;
+  border: none;
+}
+
+.pac-matched,
+div.pac-container .pac-matched {
+  font-weight: 600;
+  color: #0d9488;
+}
+
+/* Force remove all borders from pac items */
+.pac-item, .pac-item *, .pac-item-query, .pac-item-query *,
+div.pac-container .pac-item, div.pac-container .pac-item *, 
+div.pac-container .pac-item-query, div.pac-container .pac-item-query * {
+  border: none;
+  border-bottom: none;
+  border-top: none;
+  box-shadow: none;
+}
+
+/* Responsive adjustments */
+@media (max-width: 1024px) {
+  .property-panel {
+    position: static;
+    margin-bottom: 2rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .property-search-container {
+    padding: 1rem;
+    margin: 1rem;
+  }
+  
+  .compliance-app {
+    padding: 0;
+  }
+}

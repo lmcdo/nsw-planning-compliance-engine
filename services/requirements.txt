@@ -1,0 +1,72 @@
+# Core API
+fastapi==0.141.1
+uvicorn==0.52.1
+pydantic==2.13.4
+psycopg2-binary==2.9.12
+python-dotenv==1.2.2
+requests==2.34.2
+httpx==0.28.1
+anthropic==0.120.2
+boto3==1.43.64
+supabase==2.31.0
+
+# Shadow Detector + shadow_model.py
+geopandas==1.1.4
+pybdshadow==0.3.5
+shapely==2.1.2
+# suncalc: solar position for services/solar_position.py. Already present in
+# this container as a pybdshadow dependency — pybdshadow calls it to derive the
+# sun position for the shadow polygon (pybdshadow/pybdshadow.py:34,129). Now
+# declared explicitly because solar_position.py imports it DIRECTLY to compute
+# the per-address bearing, and a transitive pin is not a contract: a pybdshadow
+# release that swapped solar libraries would remove it without warning.
+# Using the same library as the polygon is deliberate — it is what stops the
+# reported Direction and the drawn shadow from disagreeing.
+suncalc==0.1.3
+# NOTE: pvlib is NOT here and must not be added. It is the test-only reference
+# in tests/test_shadow_calibration.py (requirements-test.txt). It was named as
+# our method on three customer surfaces while never being imported; #878 and
+# migration 064 removed those claims.
+
+# sentinel2.py (Shadow, Threat Radar)
+numpy==2.5.1
+pystac-client==0.9.0
+rasterio==1.5.0
+
+# Flood Truth — Sentinel-1 via Planetary Computer + BOM XML parsing
+planetary-computer==1.0.0
+xmltodict==1.0.4
+
+# Climate risk raster — NARCliM NetCDF sampling
+netCDF4==1.7.4
+
+# Whitebox — DEM/terrain/hydrology analysis (484 tools, MIT, Rust binary)
+# Watershed delineation, pluvial flood susceptibility, shadow/solar from DSM, slope/aspect
+whitebox
+
+# Conveyancing PDF generation
+reportlab==5.0.0
+
+# nsw_imagery.py (Granny Flat aerial tiles)
+Pillow==12.3.0
+opencv-python-headless==5.0.0.93
+
+# Pre-DA Site History — Tessera embeddings + Wayback SSIM
+geotessera
+scikit-image
+
+# samgeo + torch (Solar Yield panel detection, Granny Flat structure detection)
+# TOO LARGE for Railway free tier (~4GB). Deploy to Modal/RunPod/Lambda Labs GPU.
+# samgeo==1.2.0
+# torch==2.2.0
+# torchvision==0.17.0
+
+# Fuzzy matching for pre-DA site-history address/DA reconciliation (imported by services/pre_da_history.py)
+rapidfuzz
+
+# icontract: services/flood_truth.py decorates four liability-critical functions
+# with @icontract.ensure postconditions and falls back to no-op decorators when
+# the import fails. It was declared only in scripts/requirements-maintenance.txt,
+# so the fallback was what actually ran in this container — the contracts have
+# never been active in production. Pure Python, no build step.
+icontract>=2.7.3

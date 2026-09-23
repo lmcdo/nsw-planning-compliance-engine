@@ -1,0 +1,51 @@
+{
+  "id": "inner_west",
+  "name": "Inner West",
+  "type": "amalgamated",
+  "former_councils": ["Ashfield", "Leichhardt", "Marrickville"],
+  "basix": {
+    "area_code": "Area 5",
+    "area_name": "Inner West",
+    "climate_zone": "56",
+    "water_target_percent": 40
+  },
+  "planning": {
+    "residential_zones": ["R1", "R2", "R3", "R4", "R5", "B1", "B2", "B4", "MU1", "RU5"],
+    "industrial_zones": ["IN1", "IN2", "E4", "E5", "B5", "B6", "B7", "E3", "B3"],
+    "apartment_permitting_zones": [
+      "R1",
+      "R2",
+      "R3",
+      "R4",
+      "B1",
+      "B2",
+      "B3",
+      "B4",
+      "B5",
+      "B6",
+      "MU1",
+      "E1",
+      "E2"
+    ]
+  },
+  "sepp": {
+    "applicable_sepps": [
+      "SEPP_HOUSING_2021",
+      "SEPP_SUSTAINABLE_BUILDINGS_2022",
+      "SEPP_RESILIENCE_HAZARDS_2021",
+      "SEPP_TRANSPORT_INFRASTRUCTURE_2021"
+    ]
+  },
+  "transport": {
+    "has_tod_precincts": true
+  },
+  "former_council_detection": {
+    "requires_detection": true
+  },
+  "metadata": {
+    "population": 217507,
+    "area_km2": 35.0,
+    "website_url": "https://www.innerwest.nsw.gov.au",
+    "notes": "Formed in 2016 from merger of Ashfield, Leichhardt, and Marrickville councils. Each former council retains its own DCP."
+  }
+}
