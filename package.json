@@ -40,7 +40,6 @@
     "regulatory",
     "dcp"
   ],
-  "author": "Claude Code",
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0",
