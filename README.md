@@ -1,45 +1,163 @@
 # NSW Planning Compliance Engine
 
-An engineering codebase for processing NSW planning and regulatory information into structured, source-linked data and application responses.
+An evidence-oriented engineering system for turning fragmented NSW planning and regulatory material into structured, address-aware development controls and reviewable assessment outputs.
 
-This is a curated public source release and engineering portfolio asset. It contains real development work across regulatory document processing, deterministic controls, AI-assisted extraction, geospatial analysis, APIs, database migrations, and automated QA. It is not legal advice and does not establish that a development is compliant.
+## The problem this addresses
 
-## What is included
+Planning feasibility is difficult to answer from a single document. A property can be affected by a combination of planning instruments, former-council DCP material, mapped constraints, development standards, overlays, exceptions, dates, and site-specific facts. The relevant rule is often not a simple keyword: it may be conditional, numeric, hierarchical, spatial, versioned, or applicable only to a particular development type.
 
-- Regulatory rule and document-processing code in Python and TypeScript.
-- Next.js application surfaces and compliance API routes.
-- Database migrations and service-layer integrations.
-- Provenance, fail-closed, extraction, arithmetic, geospatial, and contract tests.
-- AI/LLM integration points that require locally configured provider credentials.
+That creates an underserved gap between:
 
-The public repository intentionally does not include private credentials, production databases, private source documents, or the complete deployment environment.
+- unstructured government documents and maps; and
+- the structured, source-backed controls that a planner, designer, analyst, or software system needs in order to review a proposal.
 
-## Architecture at a glance
+This project explores that gap as a software-engineering problem. It is not presented as a legal-advice product or as a guarantee that a development is compliant.
+
+## What is distinctive here
+
+The project does not treat an LLM response as the compliance result. It uses AI-assisted extraction as one part of a wider pipeline, then adds deterministic structures and checks around it.
+
+### 1. Regulatory documents become inspectable controls
+
+The Python processing and extraction code represents rules with fields such as control type, numeric value, unit, source document, clause/section reference, extracted text, method, and confidence. The SQL migrations model regulatory provisions, development controls, document versions, applicability, review queues, and source relationships.
+
+The intended result is not merely “the model says 6 metres.” It is a control that can be traced back to the material from which it was extracted and reviewed in context.
+
+### 2. AI is bounded by deterministic logic
+
+The repository contains explicit handling for:
+
+- numeric and unit-aware control extraction;
+- compound and conditional constraints;
+- arithmetic checks and phased ledgers;
+- control-type and schema validation;
+- source-value and quote-gap checks;
+- applicability and subject-mismatch controls;
+- fail-closed behavior when required evidence or identity is unavailable.
+
+This is the important engineering boundary: generative extraction can help interpret difficult regulatory language, but it is not allowed to silently substitute for deterministic validation or human review.
+
+### 3. Provenance is part of the data model and UI
+
+The compliance routes and enhanced property interface expose source document, section/clause information, extraction method, source text grounding, and review/confidence state where available. Tests cover provenance links, source values, citation fields, and quote gaps.
+
+The design goal is that a reviewer can ask “which provision produced this result?” rather than accepting an opaque answer.
+
+### 4. Property identity and spatial context matter
+
+The system includes address identity checks, NSW Planning Portal and ArcGIS-oriented clients, property constraints, precinct/boundary migrations, environmental and spatial service integrations, and geospatial test surfaces.
+
+That reflects a practical reality: a rule can be correct in isolation and still be wrong for the property if the parcel, council area, zone, instrument, or spatial overlay has been misidentified.
+
+### 5. The repository treats regulatory change as an engineering concern
+
+The schema and migrations include document/version tracking, effective dates, review queues, extraction hashes, data-source health checks, and audit-trail structures. The test suite includes fidelity gates, count-drop guards, schema gates, contract drift checks, golden fixtures, and regression-oriented controls.
+
+The system therefore demonstrates work on the less visible part of regulatory AI: keeping structured outputs reviewable as source material and extraction logic change.
+
+## Demonstrated scope
+
+The current public source contains real implementation across:
+
+- NSW planning document and DCP extraction;
+- former Ashfield, Leichhardt, and Marrickville planning contexts in the application surfaces;
+- LEP/DCP and development-control representations;
+- setback, height, FSR, parking, open-space, and related control paths;
+- conditional and compound constraints;
+- address and property identity;
+- ArcGIS and planning-data integration points;
+- environmental, climate, flood, satellite, and other spatial service boundaries;
+- compliance APIs and Next.js interfaces;
+- PostgreSQL-oriented schema and migrations;
+- AI/LLM extraction and semantic-processing integrations;
+- Python tests, TypeScript application code, contract tests, golden fixtures, and data-quality gates.
+
+These are code and test surfaces, not a claim that every integration is available from a clean public clone or that every workflow is production-deployed.
+
+## Architecture
+
+```text
+Authoritative documents / spatial services / property data
+                         |
+                         v
+        extraction, parsing, normalization, identity checks
+                         |
+                         v
+     structured provisions, controls, applicability, provenance
+                         |
+              +----------+----------+
+              |                     |
+              v                     v
+  deterministic calculations   AI-assisted interpretation
+  and fail-closed gates        with source grounding
+              |                     |
+              +----------+----------+
+                         v
+          reviewable API and application responses
+                         |
+                         v
+       tests, audit records, versioning, review queues
+```
+
+Repository areas:
 
 ```text
 app/                    Root Next.js application and API routes
 lib/                    TypeScript regulatory and application logic
-services/               Python data, regulatory, geospatial, and API services
-src/                    Python models and regulatory processing utilities
-migrations/             SQL schema and data migrations
-tests/                  Python unit, integration, contract, and control tests
-frontend-nextjs/        Separate, larger Next.js frontend application
+services/               Python regulatory, data, geospatial, and API services
+src/                    Python models and processing utilities
+migrations/             SQL schema and regulatory-data migrations
+tests/                  Unit, integration, contract, control, and golden tests
+frontend-nextjs/        Separate larger Next.js frontend application
 ```
 
-The root application and `frontend-nextjs` are separate Node applications. They should be installed and started independently.
+The root application and `frontend-nextjs` are separate Node applications.
+
+## How AI is used
+
+AI/semantic processing is used where regulatory language is difficult to reduce to a simple pattern—for example, relationships, conditional rules, and source-grounded extraction. The code contains integrations and processing paths involving LangExtract, AutoSchemaKG, RAG-style processing, and provider SDKs.
+
+The surrounding system provides the more important safeguards:
+
+1. identify the relevant property and regulatory context;
+2. extract structured candidate provisions;
+3. retain source text and document references;
+4. validate schema, units, ranges, applicability, and relationships;
+5. run deterministic arithmetic and rule checks;
+6. expose method/confidence/review state;
+7. fail closed or require review where required evidence is missing.
+
+This reduces—but does not eliminate—the risk of extraction error or hallucination. No accuracy or hallucination-prevention guarantee is claimed.
+
+## Testing and evaluation approach
+
+The test suite is not only endpoint testing. It includes tests for:
+
+- regulatory extraction fidelity and completeness;
+- source and provenance integrity;
+- control subject mismatches and quote gaps;
+- numeric units and arithmetic constraints;
+- applicability provenance and document identity;
+- fail-closed behavior;
+- schema and contract drift;
+- golden scenarios and field-coverage ratchets;
+- satellite/spatial integration boundaries;
+- intelligence-brief and assessment contracts.
+
+Some verification tests intentionally require a configured database or external data. They remain in the repository as evidence of the engineering approach, but a clean public checkout is not represented as a complete reproducible production environment.
 
 ## Practical local run
 
-### 1. Prerequisites
+### Prerequisites
 
 - Git
 - Node.js 18 or newer
 - Python 3.8 or newer
 - A virtual-environment-capable Python installation
 
-The commands below are written for PowerShell. On macOS/Linux, replace the activation command with `source .venv/bin/activate`.
+The following commands are for PowerShell. On macOS/Linux, use `source .venv/bin/activate` instead of the PowerShell activation command.
 
-### 2. Install the root application
+### Root application
 
 ```powershell
 git clone https://github.com/lmcdo/nsw-planning-compliance-engine.git
@@ -50,21 +168,17 @@ py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-```
 
-If `py` is not available, use `python -m venv .venv` instead.
-
-Start the root Next.js application:
-
-```powershell
 npm run dev
 ```
 
-Open <http://localhost:3005>. The configured root development port is `3005`.
+Open <http://localhost:3005>.
 
-### 3. Run the separate frontend
+If `py` is unavailable, use `python -m venv .venv`.
 
-In a second terminal:
+### Separate frontend
+
+In another terminal:
 
 ```powershell
 Set-Location nsw-planning-compliance-engine\frontend-nextjs
@@ -72,77 +186,64 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:3003>. The frontend expects some API, database, and service configuration depending on the page or route used.
+Open <http://localhost:3003>.
 
-### 4. Basic verification without private services
+### Low-dependency verification
 
-From the repository root, this check does not require production credentials or a live database:
+From the repository root:
 
 ```powershell
 python -m compileall -q services src enrichment migrations tests
-```
-
-The repository also contains pytest tests, but the complete suite is not guaranteed to pass in a clean public checkout because many tests intentionally exercise database schemas, external APIs, regulatory datasets, or local service configuration.
-
-To inspect the available tests:
-
-```powershell
 python -m pytest --collect-only -q
 ```
 
-Run an individual test only after checking its dependencies, for example:
+Selected tests can be run after installing Python dependencies:
 
 ```powershell
 python -m pytest tests/test_constraint_arithmetic.py -q
+python -m pytest tests/test_controls_provenance.py -q
 ```
 
-## What is required for full functionality
+## What full workflows require
 
-Starting a Next.js development server is possible with the public checkout, but meaningful end-to-end compliance workflows require additional services and data. The exact requirements vary by route:
+The public checkout can start the application shells, but meaningful end-to-end workflows require route-specific infrastructure, usually including:
 
-- PostgreSQL or Supabase configured through environment variables, with the relevant migrations applied.
-- Regulatory source documents and processed data appropriate to the workflow.
-- Python packages from `requirements.txt` and, for selected workflows, geospatial/system dependencies.
-- Provider credentials for any enabled AI/LLM, mapping, property, satellite, climate, email, storage, rate-limit, or payment integration.
-- A local environment file created by the operator. No secret-bearing environment file is included in this public repository; do not commit one.
+- PostgreSQL or Supabase with relevant migrations applied;
+- regulatory documents and processed data;
+- provider credentials for enabled AI/LLM services;
+- mapping, property, NSW planning, ArcGIS, satellite, climate, or flood APIs as applicable;
+- local configuration for storage, email, rate limiting, or other enabled services;
+- appropriate Python and system dependencies for document/geospatial processing.
 
-Common configuration names used by the code include database connection variables, `DATABASE_URL`, `PYTHON_API_URL`, `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`, and provider-specific credentials. Configure only the variables required by the route being exercised, and inspect the relevant source before enabling an integration.
+No credential-bearing environment file or private production dataset is included. Configure only the variables needed for the route being exercised, and never commit local secrets.
 
-There is no claim here that a fresh clone can reproduce the original private development environment or production deployment without those dependencies.
-
-## Example API call
-
-When the root application is running and the selected route has its required data available:
+Example route probe, when the required data is available:
 
 ```powershell
 curl "http://localhost:3005/api/compliance/setbacks?address=123%20Main%20St%20Ashfield%202131&semantic=true"
 ```
 
-For POST routes, inspect the corresponding handler under `app/api/` before constructing a request. Payloads and required services are route-specific.
+For POST routes, inspect the corresponding handler under `app/api/` before constructing a request. Payloads and dependencies are route-specific.
 
-## Testing and engineering controls
+## What this project is—and is not
 
-The test tree includes coverage for regulatory extraction, provenance, source-value controls, fail-closed behavior, arithmetic constraints, data contracts, and integration boundaries. Tests that require private databases or external services are kept visible as engineering evidence but are not represented as guaranteed clean-checkout tests.
+This repository demonstrates the design and implementation of a source-grounded regulatory information and decision-support system. It is especially relevant to engineering work involving document intelligence, structured extraction, AI control layers, provenance, geospatial data, and evaluation.
 
-Useful commands:
+It is not:
 
-```powershell
-npm test
-python -m pytest tests/test_controls_provenance.py -q
-python -m pytest tests/test_constraint_arithmetic.py -q
-```
+- a substitute for a planning, legal, building, surveying, or other qualified professional;
+- a guarantee that a proposal is compliant;
+- proof that extracted data is current or complete;
+- a claim of production scale, customer adoption, accuracy, or performance;
+- a turnkey public SaaS deployment.
 
-Use `npm test` only after installing the Python dependencies; it delegates to the repository's pytest suite.
+Regulatory content changes and must be checked against current authoritative sources.
 
-## Limitations and safety
+## Publication boundary
 
-- Regulatory content changes and must be checked against current authoritative sources.
-- Extracted or classified content can be incomplete or wrong.
-- External planning, property, spatial, and document sources vary in availability and quality.
-- Automated results require appropriate human review and do not replace qualified planning, legal, building, surveying, or other professional advice.
-- No accuracy, performance, customer, scale, or production-deployment claim is made without reproducible public evidence.
+This is a curated public subset of a larger private development repository. The private repository contains additional development history, operational material, data, and environment-specific work that is intentionally not published here.
 
-See [SECURITY.md](SECURITY.md) for the publication boundary and responsible handling expectations.
+See [SECURITY.md](SECURITY.md) for the publication boundary and handling expectations.
 
 ## License
 
